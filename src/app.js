@@ -1,3 +1,4 @@
+require('dotenv').config()
 const WebSocket = require("ws");
 const { v5: uuidv5, v4: uuidv4 } = require("uuid");
 const fs = require("fs");
@@ -14,7 +15,7 @@ const {
   USER_AGENT,
   COOKIE_JAR_LIFESPAN,
 } = require("./constants");
-const { prettifyHeaderKey } = require("./utils");
+const { prettifyHeaderKey, isProduction } = require("./utils");
 
 const getUnixTimestamp = () => Math.floor(Date.now() / 1000);
 
@@ -22,6 +23,7 @@ let websockets = {};
 let cookieJars = {};
 let retries = 0;
 let lastLiveConnectionTimestamp = getUnixTimestamp();
+let liveness_check = 0;
 const appRoot = path.resolve(__dirname);
 
 const sleep = (ms) => {
@@ -121,7 +123,7 @@ const initialize = (ipAddress, userId) => {
   const websocket = new WebSocket(websocketUrl, {
     localAddress: ipAddress,
     ca:
-      process.env.NODE_ENV === "production"
+      isProduction()
         ? fs.readFileSync(`${appRoot}/ssl/websocket.pem`, "ascii")
         : undefined,
   });
@@ -168,7 +170,7 @@ const initialize = (ipAddress, userId) => {
   websocket.on("message", async (data) => {
     // Update last live connection timestamp
     lastLiveConnectionTimestamp = getUnixTimestamp();
-
+  
     let parsed_message;
     try {
       parsed_message = JSON.parse(data);
@@ -211,14 +213,17 @@ const initialize = (ipAddress, userId) => {
       0, // CONNECTING
       2, // CLOSING
     ];
-
+    
     // Check WebSocket state and make sure it's appropriate
     if (PENDING_STATES.includes(websocket.readyState)) {
+      liveness_check += 1;
       console.log(
         ipAddress,
         "WebSocket not in appropriate state for liveness check..."
-      );
+      ,liveness_check);
       return;
+    }else{
+      liveness_check = 0;
     }
 
     // Check if timestamp is older than ~15 seconds. If it
@@ -227,7 +232,7 @@ const initialize = (ipAddress, userId) => {
     const seconds_since_last_live_message =
       current_timestamp - lastLiveConnectionTimestamp;
 
-    if (seconds_since_last_live_message > 29 || websocket.readyState === 3) {
+    if (seconds_since_last_live_message > 29 || websocket.readyState === 3 || liveness_check >= 5) {
       console.error(
         ipAddress,
         "WebSocket does not appear to be live! Restarting the WebSocket connection..."
@@ -320,4 +325,10 @@ const initializeIpAddresses = async () => {
   }
 };
 
+const checkEnvironmentVariables = () => {
+  if(process.env.NODE_ENV != "production") console.log("Warning: environment is not set as production");
+  console.assert(process.env.USER_IDS.length > 0, "Please provide a user ID");
+}
+
+checkEnvironmentVariables();
 initializeIpAddresses();
